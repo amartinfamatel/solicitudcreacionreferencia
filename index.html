@@ -23,13 +23,15 @@
 .legend-item{display:flex;align-items:center;gap:6px}.legend-swatch{width:16px;height:12px;border:1px solid #cfd8e3;border-radius:3px;background:#fff}.legend-swatch.imported{background:#eaf4ff;border-color:#9fc5ee}.legend-swatch.calculated{background:#f1f3f5;border-color:#c5cbd3}.legend-swatch.inherited{background:#edf9ef;border-color:#9fd3a8}
 .bom-table input.imported,.bom-table select.imported{background:#eaf4ff!important;border-color:#9fc5ee!important}
 .route-table input[readonly]{background:#f1f3f5!important;border-color:#c5cbd3!important}.route-table td.calculated{background:#f7f8fa}.route-table td.imported{background:#eef7ff}
+
+.app-version{position:absolute;left:14px;bottom:10px;font-size:10px;color:rgba(255,255,255,.42);letter-spacing:.4px;user-select:none}
 </style>
 </head>
 <body>
 <div class="app">
 <aside class="sidebar"><div class="logo">FAMATEL<small>conectamos contigo</small></div><div class="nav">
 <div class="nav-item active" data-view="home">⌂ Inicio</div><div class="nav-item" data-view="my">▣ Mis solicitudes</div><div class="nav-item" data-view="all">▤ Todas las solicitudes</div><div class="nav-item" id="navNew">＋ Nueva solicitud</div><div class="nav-item" data-view="calendar">▦ Calendario</div><div class="nav-item" data-view="documents">▧ Documentos</div><div class="nav-item" data-view="reports">▥ Reportes</div>
-</div></aside>
+</div><div class="app-version" title="Versión de la aplicación">v44</div></aside>
 <main class="main"><header class="topbar"><div class="title" id="pageTitle">Inicio</div><div class="user">Ana Martín<br><span style="color:#6b7280">Calidad</span></div></header><div class="content">
 <section class="view active" id="view-home"><div class="toolbar"><h2>Resumen</h2><button class="btn primary" onclick="createRequest()">Nueva solicitud</button></div><div class="cards"><div class="card kpi"><b id="kpiTotal">0</b><span>Solicitudes totales</span></div><div class="card kpi"><b id="kpiOpen">0</b><span>En curso</span></div><div class="card kpi"><b id="kpiDone">0</b><span>Completadas</span></div><div class="card kpi"><b id="kpiLate">0</b><span>Urgentes pendientes</span></div></div><div class="card"><h3>Solicitudes recientes</h3><div id="recent"></div></div></section>
 <section class="view" id="view-my"><div class="toolbar"><h2>Mis solicitudes</h2><button class="btn primary" onclick="createRequest()">Nueva solicitud</button></div><div id="myTable"></div></section>
@@ -614,6 +616,63 @@ function openRequest(id){
  currentId=id;const r=cur();const b=r?currentBlocker(r):null;activeTab=b?b.tab:(r?flowTabs(r).slice(-1)[0]:1);
  document.querySelectorAll('.view').forEach(v=>v.classList.remove('active'));document.getElementById('view-detail').classList.add('active');document.querySelectorAll('.nav-item').forEach(n=>n.classList.remove('active'));renderDetail();
 }
+
+
+// ===== v44: importación compatible con v39 TODOS LOS CAMPOS =====
+const _importAppWorkbookV44Base = importAppWorkbook;
+function decodeWideExcelValue(value){
+ if(value===undefined||value===null||value==='')return '';
+ try{return JSON.parse(String(value))}catch(e){return String(value)}
+}
+function importWideWorkbookV39(wb){
+ const rows=XLSX.utils.sheet_to_json(wb.Sheets['TODOS LOS CAMPOS'],{defval:'',raw:false});
+ if(!rows.length)throw new Error('La hoja TODOS LOS CAMPOS está vacía');
+ const requests=[];
+ rows.forEach((row,rowIndex)=>{
+  if(!Object.values(row).some(v=>String(v??'').trim()!==''))return;
+  const r=blankRequest();
+  Object.keys(row).forEach(path=>{if(String(path||'').trim())setDeep(r,String(path),decodeWideExcelValue(row[path]))});
+  normalizeRequest(r);
+  const sol=String(r.data?.initial?.solicitud||r.id||'').trim();
+  if(!sol)throw new Error('Fila '+(rowIndex+2)+' sin número de solicitud');
+  r.id=String(r.id||sol);r.data.initial.solicitud=sol;requests.push(r);
+ });
+ if(!requests.length)throw new Error('No hay solicitudes válidas en TODOS LOS CAMPOS');
+ if(wb.Sheets['Archivos']){
+  const groups=new Map();
+  XLSX.utils.sheet_to_json(wb.Sheets['Archivos'],{defval:''}).forEach(x=>{
+   const sol=String(x['Solicitud']||'').trim(),path=String(x['Ruta']||'').trim();if(!sol||!path)return;
+   const key=sol+'||'+path;if(!groups.has(key))groups.set(key,[]);groups.get(key).push(x);
+  });
+  groups.forEach((parts,key)=>{
+   const pos=key.indexOf('||'),sol=key.slice(0,pos),path=key.slice(pos+2);
+   const r=requests.find(x=>String(x.data?.initial?.solicitud||x.id)===sol);if(!r)return;
+   parts.sort((a,b)=>(Number(a['Parte'])||0)-(Number(b['Parte'])||0));
+   setDeep(r,path,parts.map(x=>String(x['Contenido']||'')).join(''));
+  });
+ }
+ requests.forEach(r=>{rebuildWorkflowAfterImport(r);r.history=Array.isArray(r.history)?r.history:[];r.history.push(stamp('Solicitud importada desde copia v39 TODOS LOS CAMPOS'))});
+ return requests;
+}
+function importAppWorkbook(wb){
+ if(wb.Sheets['TODOS LOS CAMPOS'])return importWideWorkbookV39(wb);
+ return _importAppWorkbookV44Base(wb);
+}
+function importExcel(file){
+ if(!ensureXLSX())return;const rd=new FileReader();
+ rd.onload=()=>{try{
+  const wb=XLSX.read(rd.result,{type:'array',cellDates:false});let requests,legacy=false,wide=false;
+  if(wb.Sheets['Solicitud creación ref. ES']){requests=[legacyWorkbookToRequest(wb,file.name)];legacy=true}
+  else{wide=!!wb.Sheets['TODOS LOS CAMPOS'];requests=importAppWorkbook(wb)}
+  const action=legacy?'añadirá la solicitud importada a las ya guardadas':'sustituirá las solicitudes guardadas actualmente';
+  if(!confirm('La importación '+action+'. ¿Continuar?'))return;
+  if(legacy){const imported=requests[0],idx=db.requests.findIndex(x=>String(x.data.initial.solicitud)===String(imported.data.initial.solicitud));if(idx>=0){if(!confirm('Ya existe la solicitud '+imported.data.initial.solicitud+'. ¿Deseas reemplazarla?'))return;db.requests[idx]=imported}else db.requests.unshift(imported);db.seq=Math.max(db.seq||1,db.requests.length+1)}
+  else db={seq:requests.length+1,requests};
+  persist();renderOverview();showView('all');toast(legacy?'Formulario FAMATEL importado correctamente':wide?'Copia v39 importada correctamente':'Copia Excel importada correctamente');
+ }catch(err){console.error(err);alert('No se ha podido importar el Excel. '+err.message+'\n\nFormatos admitidos:\n• Formulario FAMATEL original (.xlsb)\n• Copias de la app con Solicitudes / Datos\n• Copias v39 con TODOS LOS CAMPOS')} };
+ rd.readAsArrayBuffer(file);
+}
+document.getElementById('importFile').onchange=e=>{const f=e.target.files[0];if(f)importExcel(f);e.target.value=''};
 
 refreshStoredBomCostsFromMaster();
 
