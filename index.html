@@ -471,6 +471,150 @@ function bindCurrentFields(r){const d=r.data,q=d.quality;
  if(activeTab===8)bind(d.referenceCreation,{referenciaCreada:'creada'});
 }
 
+
+// ===== v43 export/import completo y reconstrucción del flujo =====
+const _importAppWorkbookV43 = importAppWorkbook;
+const _requestToRowV43 = requestToRow;
+
+function requestToRow(r){
+ const row=_requestToRowV43(r),d=r.data;
+ row['Periodicidad demanda']=d.commercial.periodicidadDemanda||'';
+ row['Descripción EN']=d.quality.descripcionEN||'';
+ row['Descripción FR']=d.quality.descripcionFR||'';
+ row['PIM']=d.quality.pim||'';
+ row['CE']=d.quality.ce||'';
+ row['Reciclaje']=d.quality.reciclaje||'';
+ row['WEEE']=d.quality.weee||'';
+ row['UKCA']=d.quality.ukca||'';
+ row['Certificación aplica']=d.quality.certProductoAplica||'';
+ row['Certificación producto']=d.quality.certProducto||'';
+ row['Cmin']=d.quality.cmin||'';
+ row['Idiomas etiquetas']=d.quality.idiomaEtiquetas||'';
+ row['Categoría 5']=d.master.categoria5||'';
+ row['Primera cantidad']=d.master.primeraCantidad||'';
+ row['Lead time']=d.master.leadTime||'';
+ row['Punto reorden']=d.master.puntoReorden||'';
+ row['Stock seguridad']=d.master.stockSeguridad||'';
+ row['Múltiplo pedido']=d.master.multiplePedido||'';
+ row['Planta SS']=d.master.planta||'';
+ row['Etiquetas creadas']=d.labels?.creadas||'';
+ row['Validación margen necesaria']=d.costs?.necesitaValidacionMargen||'';
+ row['Decisión margen']=d.marginValidation?.decision||'';
+ row['Referencia creada']=d.referenceCreation?.creada||'';
+ return row;
+}
+function flattenScalar(obj,path,out){
+ if(obj===null||obj===undefined){out.push([path,JSON.stringify(obj)]);return}
+ if(Array.isArray(obj))return;
+ if(typeof obj==='object'){
+  Object.keys(obj).forEach(k=>{
+   const next=path?path+'.'+k:k;
+   if(next==='data.commercial.logoArchivoData')return;
+   flattenScalar(obj[k],next,out);
+  });
+  return;
+ }
+ out.push([path,JSON.stringify(obj)]);
+}
+function setDeep(target,path,value){
+ const parts=String(path).split('.');let cur=target;
+ for(let i=0;i<parts.length-1;i++){
+  const k=parts[i];if(!cur[k]||typeof cur[k]!=='object'||Array.isArray(cur[k]))cur[k]={};cur=cur[k];
+ }
+ cur[parts[parts.length-1]]=value;
+}
+function exportExcel(){
+ if(!ensureXLSX())return;
+ const wb=XLSX.utils.book_new(),reqRows=db.requests.map(requestToRow),dataRows=[],collectionRows=[],fileRows=[];
+ db.requests.forEach(r=>{
+  const sol=r.data.initial.solicitud||r.id,flat=[];flattenScalar(r,'',flat);
+  flat.forEach(([path,val])=>dataRows.push({'Solicitud':sol,'Ruta':path,'Valor JSON':val}));
+  const collections=[['data.bom',r.data.bom],['data.routing',r.data.routing],['data.internalRework',r.data.internalRework],['data.otherCosts',r.data.otherCosts],['data.documents',r.data.documents],['history',r.history]];
+  collections.forEach(([path,arr])=>(arr||[]).forEach((item,i)=>collectionRows.push({'Solicitud':sol,'Ruta':path,'Orden':i+1,'Valor JSON':JSON.stringify(item)})));
+  const raw=String(r.data.commercial.logoArchivoData||'');
+  if(raw){for(let i=0,part=1;i<raw.length;i+=30000,part++)fileRows.push({'Solicitud':sol,'Ruta':'data.commercial.logoArchivoData','Parte':part,'Contenido':raw.slice(i,i+30000)})}
+ });
+ XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(reqRows),'Solicitudes');
+ XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(dataRows.length?dataRows:[{'Solicitud':'','Ruta':'','Valor JSON':''}]),'Datos');
+ XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(collectionRows.length?collectionRows:[{'Solicitud':'','Ruta':'','Orden':'','Valor JSON':''}]),'Colecciones');
+ XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(fileRows.length?fileRows:[{'Solicitud':'','Ruta':'','Parte':'','Contenido':''}]),'Archivos');
+ XLSX.writeFile(wb,'famatel_solicitudes_'+new Date().toISOString().slice(0,10)+'.xlsx');
+}
+function rebuildWorkflowAfterImport(r){
+ normalizeRequest(r);syncRouteCosts(r);
+ const flow=flowTabs(r),now=new Date().toISOString();
+ r.completed=Object.assign({},r.completed||{});
+ let blocked=false;
+ flow.forEach((tab,idx)=>{
+  if(!blocked&&missing(tab,r).length===0){
+   r.completed[tab]=true;
+   if(!r.availableSince[tab])r.availableSince[tab]=idx===0?(r.created||now):now;
+   const next=flow[idx+1];if(next&&!r.availableSince[next])r.availableSince[next]=now;
+  }else{r.completed[tab]=false;blocked=true}
+ });
+ revalidateRequest(r,false);
+ const blocker=currentBlocker(r);if(blocker&&!r.availableSince[blocker.tab])r.availableSince[blocker.tab]=now;
+ r.history=r.history||[];r.history.push(stamp('Campos y avance reconstruidos tras importar la copia Excel'));
+ return r;
+}
+function importAppWorkbook(wb){
+ if(!wb.Sheets['Datos']){
+  const requests=_importAppWorkbookV43(wb);
+  const summary=wb.Sheets['Solicitudes']?XLSX.utils.sheet_to_json(wb.Sheets['Solicitudes'],{defval:''}):[];
+  const bySummary=new Map(summary.map(x=>[String(x['Solicitud']||'').trim(),x]));
+  requests.forEach(r=>{
+   const x=bySummary.get(String(r.data.initial.solicitud||'').trim())||{};
+   r.data.commercial.periodicidadDemanda=String(x['Periodicidad demanda']||x['Periodicidad Demanda']||r.data.commercial.periodicidadDemanda||'Anual');
+   r.data.quality.descripcionEN=String(x['Descripción EN']||r.data.quality.descripcionEN||'');
+   r.data.quality.descripcionFR=String(x['Descripción FR']||r.data.quality.descripcionFR||'');
+   r.data.quality.pim=String(x['PIM']||r.data.quality.pim||'');
+   r.data.quality.ce=String(x['CE']||r.data.quality.ce||'');
+   r.data.quality.reciclaje=String(x['Reciclaje']||r.data.quality.reciclaje||'');
+   r.data.quality.weee=String(x['WEEE']||r.data.quality.weee||'');
+   r.data.quality.ukca=String(x['UKCA']||r.data.quality.ukca||'');
+   r.data.quality.certProductoAplica=String(x['Certificación aplica']||r.data.quality.certProductoAplica||'');
+   r.data.quality.certProducto=String(x['Certificación producto']||r.data.quality.certProducto||'');
+   r.data.quality.cmin=String(x['Cmin']||r.data.quality.cmin||'');
+   r.data.quality.idiomaEtiquetas=String(x['Idiomas etiquetas']||r.data.quality.idiomaEtiquetas||'');
+   r.data.master.categoria5=String(x['Categoría 5']||r.data.master.categoria5||'');
+   r.data.master.primeraCantidad=String(x['Primera cantidad']||r.data.master.primeraCantidad||'');
+   r.data.master.leadTime=String(x['Lead time']||r.data.master.leadTime||'');
+   r.data.master.puntoReorden=String(x['Punto reorden']||r.data.master.puntoReorden||'');
+   r.data.master.stockSeguridad=String(x['Stock seguridad']||r.data.master.stockSeguridad||'');
+   r.data.master.multiplePedido=String(x['Múltiplo pedido']||r.data.master.multiplePedido||'');
+   r.data.master.planta=String(x['Planta SS']||r.data.master.planta||'');
+   rebuildWorkflowAfterImport(r);
+  });
+  return requests;
+ }
+ const rows=XLSX.utils.sheet_to_json(wb.Sheets['Datos'],{defval:''}).filter(x=>String(x['Solicitud']||'').trim()&&String(x['Ruta']||'').trim());
+ if(!rows.length)throw new Error('La hoja Datos está vacía');
+ const map=new Map();
+ rows.forEach(x=>{
+  const sol=String(x['Solicitud']).trim();if(!map.has(sol)){const r=blankRequest();r.data.initial.solicitud=sol;r.id=sol;map.set(sol,r)}
+  let value;try{value=JSON.parse(String(x['Valor JSON']))}catch(e){value=String(x['Valor JSON']??'')}
+  setDeep(map.get(sol),String(x['Ruta']),value);
+ });
+ const requests=[...map.values()];
+ const bySol=new Map(requests.map(r=>[String(r.data.initial.solicitud),r]));
+ ['data.bom','data.routing','data.internalRework','data.otherCosts','data.documents','history'].forEach(path=>requests.forEach(r=>setDeep(r,path,[])));
+ if(wb.Sheets['Colecciones']){
+  const cr=XLSX.utils.sheet_to_json(wb.Sheets['Colecciones'],{defval:''}).sort((a,b)=>(Number(a['Orden'])||0)-(Number(b['Orden'])||0));
+  cr.forEach(x=>{const r=bySol.get(String(x['Solicitud']).trim()),path=String(x['Ruta']||'');if(!r||!path)return;let v;try{v=JSON.parse(String(x['Valor JSON']))}catch(e){v=String(x['Valor JSON']??'')}let arr=r;for(const k of path.split('.'))arr=arr[k];if(Array.isArray(arr))arr.push(v)})
+ }
+ if(wb.Sheets['Archivos']){
+  const groups={};XLSX.utils.sheet_to_json(wb.Sheets['Archivos'],{defval:''}).forEach(x=>{const sol=String(x['Solicitud']).trim();if(!sol)return;(groups[sol]||(groups[sol]=[])).push(x)});
+  Object.entries(groups).forEach(([sol,parts])=>{const r=bySol.get(sol);if(r)r.data.commercial.logoArchivoData=parts.sort((a,b)=>(Number(a['Parte'])||0)-(Number(b['Parte'])||0)).map(x=>String(x['Contenido']||'')).join('')})
+ }
+ requests.forEach(rebuildWorkflowAfterImport);
+ return requests;
+}
+const _openRequestV43=openRequest;
+function openRequest(id){
+ currentId=id;const r=cur();const b=r?currentBlocker(r):null;activeTab=b?b.tab:(r?flowTabs(r).slice(-1)[0]:1);
+ document.querySelectorAll('.view').forEach(v=>v.classList.remove('active'));document.getElementById('view-detail').classList.add('active');document.querySelectorAll('.nav-item').forEach(n=>n.classList.remove('active'));renderDetail();
+}
+
 refreshStoredBomCostsFromMaster();
 
 function migrateV21(){db.requests.forEach(r=>{r.completed=Object.assign({1:false,2:false,3:false,4:false,5:false,6:false,7:false},r.completed||{});const d=r.data,q=d.quality||(d.quality={});if(!q.certProductoAplica)q.certProductoAplica=q.certProducto&&String(q.certProducto).trim().toLowerCase()!=='no aplica'?'Sí':'No aplica';if(!q.pesoNeto){const src=d.master.tipoArticulo==='Fabricación'?d.manufacturing:d.purchase;q.pesoNeto=src.pesoNeto||'';q.anchoProducto=src.anchoProducto||'';q.largoProducto=src.largoProducto||'';q.altoProducto=src.altoProducto||'';q.volumenProducto=src.volumenProducto||''}calcVolume(q)})}
