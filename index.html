@@ -31,7 +31,7 @@
 <div class="app">
 <aside class="sidebar"><div class="logo">FAMATEL<small>conectamos contigo</small></div><div class="nav">
 <div class="nav-item active" data-view="home">⌂ Inicio</div><div class="nav-item" data-view="my">▣ Mis solicitudes</div><div class="nav-item" data-view="all">▤ Todas las solicitudes</div><div class="nav-item" id="navNew">＋ Nueva solicitud</div><div class="nav-item" data-view="calendar">▦ Calendario</div><div class="nav-item" data-view="documents">▧ Documentos</div><div class="nav-item" data-view="reports">▥ Reportes</div>
-</div><div class="app-version" title="Versión de la aplicación">v44</div></aside>
+</div><div class="app-version" title="Versión de la aplicación">v45</div></aside>
 <main class="main"><header class="topbar"><div class="title" id="pageTitle">Inicio</div><div class="user">Ana Martín<br><span style="color:#6b7280">Calidad</span></div></header><div class="content">
 <section class="view active" id="view-home"><div class="toolbar"><h2>Resumen</h2><button class="btn primary" onclick="createRequest()">Nueva solicitud</button></div><div class="cards"><div class="card kpi"><b id="kpiTotal">0</b><span>Solicitudes totales</span></div><div class="card kpi"><b id="kpiOpen">0</b><span>En curso</span></div><div class="card kpi"><b id="kpiDone">0</b><span>Completadas</span></div><div class="card kpi"><b id="kpiLate">0</b><span>Urgentes pendientes</span></div></div><div class="card"><h3>Solicitudes recientes</h3><div id="recent"></div></div></section>
 <section class="view" id="view-my"><div class="toolbar"><h2>Mis solicitudes</h2><button class="btn primary" onclick="createRequest()">Nueva solicitud</button></div><div id="myTable"></div></section>
@@ -618,7 +618,7 @@ function openRequest(id){
 }
 
 
-// ===== v44: importación compatible con v39 TODOS LOS CAMPOS =====
+// ===== v45: importación compatible con v39 TODOS LOS CAMPOS =====
 const _importAppWorkbookV44Base = importAppWorkbook;
 function decodeWideExcelValue(value){
  if(value===undefined||value===null||value==='')return '';
@@ -673,6 +673,104 @@ function importExcel(file){
  rd.readAsArrayBuffer(file);
 }
 document.getElementById('importFile').onchange=e=>{const f=e.target.files[0];if(f)importExcel(f);e.target.value=''};
+
+
+
+// ===== v45: bloque de cambios Solicitud / Master Data / Compra-Fabricación =====
+const APP_VERSION_V45='v45';
+const _blankRequestV45Base=blankRequest;
+blankRequest=function(){
+ const r=_blankRequestV45Base();
+ r.data.commercial.tipoProductoSolicitud=r.data.commercial.tipoProductoSolicitud||'';
+ r.data.master.plantaFabricacion=r.data.master.plantaFabricacion||'';
+ return r;
+};
+const _normalizeRequestV45Base=normalizeRequest;
+normalizeRequest=function(r){
+ r=_normalizeRequestV45Base(r);
+ r.data.commercial.tipoProductoSolicitud=r.data.commercial.tipoProductoSolicitud||'';
+ r.data.master.plantaFabricacion=r.data.master.plantaFabricacion||'';
+ return r;
+};
+articleTypeSelector=function(value){return `<div class="field"><label>Tipo de artículo <span class="req">*</span></label><select id="tipoArticulo" onchange="switchArticleType(this.value)"><option value="">Seleccionar</option><option ${value==='Compra'?'selected':''}>Compra</option><option ${value==='Fabricación'?'selected':''}>Fabricación</option><option ${value==='Bulgaria'?'selected':''}>Bulgaria</option><option ${value==='FME Ningbo'?'selected':''}>FME Ningbo</option></select></div>`};
+
+const _requirementsV45Base=requirements;
+requirements=function(tab,r){
+ const d=r.data,c=d.commercial,ma=d.master;
+ if(tab===1){
+  const x=[['Nº solicitud',d.initial.solicitud],['Descripción referencia',d.initial.descripcion],['Solicitante',d.initial.solicitante],['Fecha solicitud',d.initial.fechaSolicitud],['Urgente',d.initial.urgente],['Cliente/Grupo',c.cliente],['Nº cliente',c.numCliente],['¿Existe referencia padre?',c.existeRefPadre],['Tipo de artículo solicitado',c.tipoProductoSolicitud]];
+  if(c.existeRefPadre==='Sí')x.push(['Referencia padre',c.refPadre]);
+  if(c.tipoProductoSolicitud!=='Componente'){
+   const all=_requirementsV45Base(1,r);
+   const skip=new Set(x.map(v=>v[0]).concat(['Referencia padre']));
+   all.forEach(v=>{if(!skip.has(v[0]))x.push(v)});
+  }else x.push(['Descripción detallada',c.descripcionDetallada]);
+  return x;
+ }
+ if(tab===4){
+  if(ma.tipoArticulo==='Fabricación'){
+   const x=_requirementsV45Base(tab,r).slice();x.splice(6,0,['Planta de fabricación',ma.plantaFabricacion]);return x;
+  }
+  if(ma.tipoArticulo==='Bulgaria'||ma.tipoArticulo==='FME Ningbo'){
+   const old=ma.tipoArticulo;ma.tipoArticulo='Compra';const a=_requirementsV45Base(tab,r);ma.tipoArticulo='Fabricación';const b=_requirementsV45Base(tab,r);ma.tipoArticulo=old;
+   const merged=[],seen=new Set();[...a,...b].forEach(v=>{if(!seen.has(v[0])){seen.add(v[0]);merged.push(v)}});
+   return merged;
+  }
+ }
+ return _requirementsV45Base(tab,r);
+};
+const _sectionResponsibleV45Base=sectionResponsible;
+sectionResponsible=function(tab,r){if(tab===4&&(r.data.master.tipoArticulo==='Bulgaria'||r.data.master.tipoArticulo==='FME Ningbo'))return 'JL Gutiérrez / Josep Casas';return _sectionResponsibleV45Base(tab,r)};
+
+function annualDemandV45(r){const n=Number(r.data.commercial.demanda)||0;return r.data.commercial.periodicidadDemanda==='Mensual'?n*12:n}
+const _recalcRouteRowV45Base=recalcRouteRow;
+recalcRouteRow=function(r,row){_recalcRouteRowV45Base(r,row);const qty=annualDemandV45(r);row.totalCost=row.unitCost&&qty?String(Number(row.unitCost)*qty):''};
+
+function hybridPurchaseSectionV45(d){
+ const p=d.purchase,t=p.tipoRetrabajo||'';
+ return `<div class="section v45-hybrid-purchase"><h3>Datos de compra / suministro entre plantas</h3><div class="grid">${input('proveedor','Nombre proveedor',p.proveedor,true)}${input('codigoProveedor','Código proveedor',p.codigoProveedor,true)}${input('precioCompra','Precio compra',p.precioCompra,true,'number')}${select('moneda','Moneda',p.moneda,['EUR','USD','GBP'],true)}${input('ruta','Ruta de tránsito',p.ruta,true)}${input('cantidadCaja','Cantidad por caja',p.cantidadCaja,true,'number')}${input('cantidadEstuche','Cantidad por estuche',p.cantidadEstuche,true,'number')}${input('refProveedor','Referencia cruzada',p.refProveedor,true)}${input('plantaRecepcion','Planta recepción',p.plantaRecepcion,true)}${input('partida','Partida arancelaria (HS)',p.partida,true)}</div></div>`;
+}
+const _renderFormV45Base=renderForm;
+renderForm=function(r){
+ const d=r.data,hybrid=d.master.tipoArticulo==='Bulgaria'||d.master.tipoArticulo==='FME Ningbo';
+ let oldType;
+ if(activeTab===4&&hybrid){oldType=d.master.tipoArticulo;d.master.tipoArticulo='Fabricación'}
+ _renderFormV45Base(r);
+ if(oldType)d.master.tipoArticulo=oldType;
+ const area=document.getElementById('formArea');if(!area)return;
+ if(activeTab===1){
+  const anchor=document.getElementById('refPadre')?.closest('.field')||document.getElementById('existeRefPadre')?.closest('.field');
+  if(anchor&&!document.getElementById('tipoProductoSolicitud')){
+   const wrap=document.createElement('div');wrap.innerHTML=select('tipoProductoSolicitud','Tipo de artículo solicitado',d.commercial.tipoProductoSolicitud,['Componente','Artículo de venta'],true);anchor.insertAdjacentElement('afterend',wrap.firstElementChild);
+  }
+  const e=document.getElementById('tipoProductoSolicitud');if(e)e.addEventListener('change',()=>{d.commercial.tipoProductoSolicitud=e.value;autoSave();renderDetail()});
+  if(d.commercial.tipoProductoSolicitud==='Componente'){
+   ['precioObjetivo','demanda','periodicidadDemanda','tipoEtiqueta','logo','codigoBarras','tipoEmbalaje'].forEach(id=>{const x=document.getElementById(id);if(x)x.closest('.field').style.display='none'});
+   area.querySelectorAll('.section h3').forEach(h=>{if(['Logo de cliente','Embalaje específico de cliente','Configuración de etiqueta de cliente','Códigos de barras de cliente'].includes(h.textContent.trim()))h.parentElement.style.display='none'});
+  }
+ }
+ if(activeTab===2){const s=document.getElementById('tipoArticulo');if(s){s.innerHTML='<option value="">Seleccionar</option>'+['Compra','Fabricación','Bulgaria','FME Ningbo'].map(v=>`<option ${d.master.tipoArticulo===v?'selected':''}>${v}</option>`).join('')}}
+ if(activeTab===4){
+  if(d.master.tipoArticulo==='Fabricación'){
+   const plantaSS=document.getElementById('planta')?.closest('.field');if(plantaSS&&!document.getElementById('plantaFabricacion')){const w=document.createElement('div');w.innerHTML=select('plantaFabricacion','Planta de fabricación',d.master.plantaFabricacion,['Lliçà','Peralta','Llagosta','Bulgaria','FME Ningbo','Externos'],true);plantaSS.insertAdjacentElement('afterend',w.firstElementChild)}
+  }
+  if(hybrid){
+   const bomTitle=[...area.querySelectorAll('.section h3')].find(h=>h.textContent.includes('Lista de materiales'));
+   if(bomTitle){const w=document.createElement('div');w.innerHTML=hybridPurchaseSectionV45(d);bomTitle.parentElement.insertAdjacentElement('beforebegin',w.firstElementChild)}
+   const notice=area.querySelector('.notice');if(notice&&notice.textContent.includes('Master Data'))notice.innerHTML='Tipo definido por Master Data: <b>'+esc(d.master.tipoArticulo)+'</b>. Se muestran los campos únicos de Compra y Fabricación sin duplicar planificación ni logística.';
+  }
+ }
+ bindCurrentFieldsV45Extra(r);
+};
+function bindCurrentFieldsV45Extra(r){const d=r.data;
+ if(activeTab===4){
+  const pf=document.getElementById('plantaFabricacion');if(pf){pf.addEventListener('change',()=>{d.master.plantaFabricacion=pf.value;autoSave()});pf.addEventListener('input',()=>{d.master.plantaFabricacion=pf.value;autoSave()})}
+  if(d.master.tipoArticulo==='Bulgaria'||d.master.tipoArticulo==='FME Ningbo')bind(d.purchase,{proveedor:'proveedor',codigoProveedor:'codigoProveedor',precioCompra:'precioCompra',moneda:'moneda',ruta:'ruta',cantidadCaja:'cantidadCaja',cantidadEstuche:'cantidadEstuche',refProveedor:'refProveedor',plantaRecepcion:'plantaRecepcion',partida:'partida'});
+ }
+}
+
+// Marca de versión robusta
+window.addEventListener('DOMContentLoaded',()=>{document.title=document.title.replace(/v\d+/i,'').trim()+' · v45';let v=document.getElementById('appVersionV45');if(!v){v=document.createElement('div');v.id='appVersionV45';v.textContent='v45';v.style.cssText='position:fixed;left:12px;bottom:8px;z-index:9999;font:11px Arial;color:rgba(255,255,255,.72);pointer-events:none';document.body.appendChild(v)}});
 
 refreshStoredBomCostsFromMaster();
 
