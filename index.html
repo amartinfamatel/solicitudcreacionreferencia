@@ -97,7 +97,8 @@ async function readIDB(){
   });
 }
 function persist(){
-  const payload=JSON.stringify(db);
+  const storedDb={...db,requests:(db.requests||[]).filter(r=>!r._temporary)};
+  const payload=JSON.stringify(storedDb);
   let localOK=false;
   try{
     localStorage.setItem(STORAGE_KEY,payload);
@@ -122,9 +123,10 @@ function normalizeRequest(r){const b=blankRequest();r.data=r.data||{};for(const 
 
 function stamp(t){return new Date().toLocaleString('es-ES')+' · '+t}
 function toast(t){const e=document.getElementById('toast');e.textContent=t;e.style.display='block';setTimeout(()=>e.style.display='none',2400)}
-function showView(name){if(currentId){captureAllVisibleControls();commitActiveField();persist();}document.querySelectorAll('.view').forEach(v=>v.classList.remove('active'));document.getElementById('view-'+name).classList.add('active');document.querySelectorAll('.nav-item[data-view]').forEach(n=>n.classList.toggle('active',n.dataset.view===name));document.getElementById('pageTitle').textContent=({home:'Inicio',my:'Mis solicitudes',all:'Todas las solicitudes',calendar:'Calendario',documents:'Documentos',reports:'Reportes'}[name]||'Creación de referencia');renderOverview()}
+function showView(name){if(currentId){const active=cur();captureAllVisibleControls();commitActiveField();if(active&&active._temporary){db.requests=db.requests.filter(r=>r!==active);currentId=null}else persist();}document.querySelectorAll('.view').forEach(v=>v.classList.remove('active'));document.getElementById('view-'+name).classList.add('active');document.querySelectorAll('.nav-item[data-view]').forEach(n=>n.classList.toggle('active',n.dataset.view===name));document.getElementById('pageTitle').textContent=({home:'Inicio',my:'Mis solicitudes',all:'Todas las solicitudes',calendar:'Calendario',documents:'Documentos',reports:'Reportes'}[name]||'Creación de referencia');renderOverview()}
 document.querySelectorAll('.nav-item[data-view]').forEach(n=>n.onclick=()=>showView(n.dataset.view));document.getElementById('navNew').onclick=createRequest;
-function createRequest(){const r=blankRequest();db.requests.unshift(r);db.seq=(db.seq||1)+1;persist();openRequest(r.id);toast('Nueva solicitud creada')}
+function createRequest(){const previous=cur();if(previous&&previous._temporary)db.requests=db.requests.filter(r=>r!==previous);const r=blankRequest();r._temporary=true;r.history=[];db.requests.unshift(r);openRequest(r.id);toast('Nueva solicitud sin guardar')}
+function finalizeTemporaryRequest(r){if(!r||!r._temporary)return false;delete r._temporary;r.history=r.history||[];r.history.unshift(stamp('Solicitud creada'));db.seq=Math.max((db.seq||1)+1,db.requests.length+1);return true}
 function openRequest(id){currentId=id;activeTab=1;document.querySelectorAll('.view').forEach(v=>v.classList.remove('active'));document.getElementById('view-detail').classList.add('active');document.querySelectorAll('.nav-item').forEach(n=>n.classList.remove('active'));renderDetail()}
 function cur(){return db.requests.find(r=>r.id===currentId)}
 function val(o,k){return (o&&o[k]!==undefined)?o[k]:''}
@@ -357,7 +359,7 @@ function goTab(tab){const r=cur();if(!r)return;if(tab===9){captureAllVisibleCont
 async function saveManual(){
  const btn=document.getElementById('saveDraftBtn');if(btn){btn.disabled=true;btn.textContent='Guardando…'}
  const r=cur();if(!r){if(btn){btn.disabled=false;btn.textContent='Guardar borrador'}return}
- captureAllVisibleControls();commitActiveField();syncRouteCosts(r);r.updated=new Date().toISOString();revalidateRequest(r,true);
+ captureAllVisibleControls();commitActiveField();finalizeTemporaryRequest(r);syncRouteCosts(r);r.updated=new Date().toISOString();revalidateRequest(r,true);
  const flow=flowTabs(r),currentMissing=flow.includes(activeTab)?missing(activeTab,r):[];let unlockedNext=false;
  if(flow.includes(activeTab)&&currentMissing.length===0){
   if(!r.completed[activeTab]){r.completed[activeTab]=true;r.history.push(stamp(sectionNames[activeTab-1]+' completado al guardar borrador'))}
@@ -429,7 +431,7 @@ function requirements(tab,r){
  return [];
 }
 function revalidateRequest(r,addHistory=false){let changed=false;r.availableSince=r.availableSince||{};for(const tab of flowTabs(r)){if(r.completed[tab]&&missing(tab,r).length){r.completed[tab]=false;r.availableSince[tab]=new Date().toISOString();changed=true;if(addHistory)r.history.push(stamp(sectionNames[tab-1]+' reabierto automáticamente por faltar información'))}}if(r.data.costs.necesitaValidacionMargen==='Sí'&&r.data.marginValidation.decision==='No aceptado'&&r.completed[7])r.status='Finalizada - No aceptada por margen';else if(r.completed[8]&&r.data.referenceCreation.creada==='Sí')r.status='Completada';else r.status='En curso';return changed}
-function completeSection(tab){commitActiveField();const r=cur(),m=missing(tab,r);if(m.length){alert('No se puede completar el apartado. Faltan:\n\n• '+m.join('\n• '));return}r.completed[tab]=true;r.history.push(stamp(sectionNames[tab-1]+' completado'));syncRouteCosts(r);revalidateRequest(r,false);const flow=flowTabs(r),pos=flow.indexOf(tab),nextTab=pos>=0&&pos<flow.length-1?flow[pos+1]:null;if(nextTab&&!r.availableSince[nextTab])r.availableSince[nextTab]=new Date().toISOString();persist();activeTab=nextTab||tab;renderDetail();renderOverview();toast('Apartado completado')}
+function completeSection(tab){commitActiveField();const r=cur();finalizeTemporaryRequest(r);const m=missing(tab,r);if(m.length){alert('No se puede completar el apartado. Faltan:\n\n• '+m.join('\n• '));return}r.completed[tab]=true;r.history.push(stamp(sectionNames[tab-1]+' completado'));syncRouteCosts(r);revalidateRequest(r,false);const flow=flowTabs(r),pos=flow.indexOf(tab),nextTab=pos>=0&&pos<flow.length-1?flow[pos+1]:null;if(nextTab&&!r.availableSince[nextTab])r.availableSince[nextTab]=new Date().toISOString();persist();activeTab=nextTab||tab;renderDetail();renderOverview();toast('Apartado completado')}
 function sectionStarted(tab,r){const d=r.data;if(tab===4){const f=d.manufacturing,p=d.purchase,l=d.logistics;return Boolean(d.master.primeraCantidad||d.master.leadTime||d.master.puntoReorden||d.master.stockSeguridad||d.master.multiplePedido||d.master.planta||d.bom.length||d.routing.length||f.necesitaMolde||f.tipoRetrabajo||p.proveedor||p.precioCompra||l.packUnitAplica||l.estucheAplica||l.cajaAplica)}return true}
 function sectionProgress(tab,r){if(!sectionStarted(tab,r))return 0;const req=requirements(tab,r);if(!req.length)return r.completed[tab]?100:0;const done=req.filter(x=>valueDefined(x[1])).length;return Math.round(done/req.length*100)}
 function totalFieldProgress(r){const req=flowTabs(r).flatMap(tab=>requirements(tab,r));if(!req.length)return 0;const done=req.filter(x=>valueDefined(x[1])).length;return Math.round(done/req.length*100)}
